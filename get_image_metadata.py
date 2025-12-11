@@ -83,17 +83,17 @@ def extract_category_title(category_url: str) -> Optional[tuple[str, str]]:
 def api_request(base_url: str, params: dict) -> Optional[dict]:
     """
     Run a MediaWiki API request anonymously with polite headers.
+    Uses requests.get() directly with explicit User-Agent header.
     """
     api_url = f"{base_url}/w/api.php"
-    session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": "Wiki-Jio/1.0 (contact: Aditya-wiki-0545)",
-            "Accept": "application/json",
-        }
-    )
+    # Set User-Agent header clearly as required
+    headers = {
+        "User-Agent": "Wiki-Jio/1.0 (contact: Aditya-wiki-0545)",
+        "Accept": "application/json",
+    }
     try:
-        resp = session.get(api_url, params=params, timeout=10)
+        # Use requests.get() directly as instructed
+        resp = requests.get(api_url, params=params, headers=headers, timeout=10)
         resp.raise_for_status()
         return resp.json()
     except Exception as error:  # noqa: BLE001
@@ -101,9 +101,103 @@ def api_request(base_url: str, params: dict) -> Optional[dict]:
         return None
 
 
+def _fetch_image_name_and_url(base_url: str, title: str) -> Optional[dict]:
+    """
+    Fetch only file name and URL of winning images.
+    Focus on just these two fields as instructed - metadata fetching is handled elsewhere.
+    """
+    api_params = {
+        "action": "query",
+        "titles": title,
+        "prop": "imageinfo",
+        "iiprop": "url",
+        "format": "json",
+        "formatversion": "2",
+        "redirects": "true",
+        "converttitles": "true",
+    }
+
+    data = api_request(base_url, api_params)
+    if not data:
+        return None
+
+    if "error" in data:
+        print(f"[X] MediaWiki error: {data['error'].get('info')}")
+        return None
+
+    pages = data.get("query", {}).get("pages", [])
+    if not pages:
+        print("[X] No page data returned.")
+        return None
+
+    page = pages[0]
+    if page.get("missing"):
+        print("[X] File not found.")
+        return None
+
+    imageinfo = page.get("imageinfo", [])
+    if not imageinfo:
+        print("[X] No imageinfo returned.")
+        return None
+
+    info = imageinfo[0]
+    
+    # Extract only file name (title) and URL as instructed
+    file_name = page.get("title", title)
+    file_url = info.get("url")
+
+    return {
+        "title": file_name,
+        "url": file_url,
+    }
+
+
+def _get_image_dimensions(base_url: str, title: str) -> Optional[tuple[int, int]]:
+    """
+    Get only image dimensions (width, height) for aspect ratio filtering.
+    This is a minimal request to check if image matches target size.
+    """
+    api_params = {
+        "action": "query",
+        "titles": title,
+        "prop": "imageinfo",
+        "iiprop": "dimensions",
+        "format": "json",
+        "formatversion": "2",
+        "redirects": "true",
+        "converttitles": "true",
+    }
+
+    data = api_request(base_url, api_params)
+    if not data:
+        return None
+
+    pages = data.get("query", {}).get("pages", [])
+    if not pages:
+        return None
+
+    page = pages[0]
+    if page.get("missing"):
+        return None
+
+    imageinfo = page.get("imageinfo", [])
+    if not imageinfo:
+        return None
+
+    info = imageinfo[0]
+    width = info.get("width")
+    height = info.get("height")
+    
+    if width and height:
+        return (width, height)
+    return None
+
+
 def _fetch_image_metadata(base_url: str, title: str) -> Optional[dict]:
     """
-    Fetch image metadata anonymously from a file title.
+    Fetch full image metadata anonymously from a file title.
+    This is kept for backward compatibility, but the main focus should be on
+    _fetch_image_name_and_url() which only gets file name and URL.
     """
     api_params = {
         "action": "query",
@@ -194,7 +288,8 @@ def get_image_metadata(image_url: str) -> Optional[dict]:
 
 def fetch_category_files(category_url: str) -> list[dict]:
     """
-    Fetch file metadata for a category (direct children only).
+    Fetch file name and URL for a category (direct children only).
+    Focus on getting only file name and URL as instructed.
     """
     extracted = extract_category_title(category_url)
     if not extracted:
@@ -232,9 +327,10 @@ def fetch_category_files(category_url: str) -> list[dict]:
     for title in files:
         if not title:
             continue
-        metadata = _fetch_image_metadata(base_url, title)
-        if metadata:
-            items.append(metadata)
+        # Focus on getting only file name and URL
+        image_data = _fetch_image_name_and_url(base_url, title)
+        if image_data:
+            items.append(image_data)
     return items
 
 
@@ -244,8 +340,10 @@ def fetch_category_files_recursive(
     target_size: tuple[int, int] | None = None,
 ) -> list[dict]:
     """
-    Recursively fetch file metadata from a category and all subcategories.
+    Recursively fetch file name and URL from a category and all subcategories.
+    Traverses from parent category (correct approach) rather than searching by title keywords.
     Emits progress lines for each category and file batch.
+    Focus on getting only file name and URL as instructed.
     """
     extracted = extract_category_title(category_url)
     if not extracted:
@@ -267,13 +365,19 @@ def fetch_category_files_recursive(
             if title in seen_files:
                 continue
             seen_files.add(title)
-            metadata = _fetch_image_metadata(base_url, title)
-            if metadata:
+            # Focus on getting only file name and URL as instructed
+            image_data = _fetch_image_name_and_url(base_url, title)
+            if image_data:
+                # If aspect ratio filter is needed, check dimensions
+                # Otherwise just add the name and URL
                 if target_size:
-                    tw, th = target_size
-                    if metadata.get("width") != tw or metadata.get("height") != th:
+                    dimensions = _get_image_dimensions(base_url, title)
+                    if not dimensions:
                         continue
-                items.append(metadata)
+                    tw, th = target_size
+                    if dimensions[0] != tw or dimensions[1] != th:
+                        continue
+                items.append(image_data)
                 if max_items is not None and len(items) >= max_items:
                     return
 
@@ -341,20 +445,22 @@ def fetch_category_files_recursive(
 # =============================================================================
 
 def display_metadata(metadata: dict) -> None:
-    """Pretty-print the metadata with simple formatting."""
+    """Pretty-print the image data with focus on file name and URL."""
     print("=" * 60)
-    print("IMAGE METADATA (anonymous API call)")
+    print("WINNING IMAGE (file name and URL)")
     print("=" * 60)
-    print(f"Title:       {metadata.get('title', 'Unknown')}")
+    print(f"File Name:   {metadata.get('title', 'Unknown')}")
     print(f"URL:         {metadata.get('url', 'Unknown')}")
-    print(f"Author:      {metadata.get('author', 'Unknown')}")
-    print(f"Size bytes:  {metadata.get('size_bytes', 'Unknown')}")
-    print(f"License:     {metadata.get('license_type', 'Unknown')}")
-    print(f"Description: {metadata.get('description', 'Unknown')}")
-    print(f"Created:     {metadata.get('creation_date', 'Unknown')}")
-    print(f"Resolution:  {metadata.get('resolution', 'Unknown')}")
-    categories = metadata.get("categories") or []
-    print(f"Categories:  {', '.join(categories) if categories else 'None'}")
+    # Only show additional fields if they exist (for backward compatibility)
+    if 'author' in metadata:
+        print(f"Author:      {metadata.get('author', 'Unknown')}")
+        print(f"Size bytes:  {metadata.get('size_bytes', 'Unknown')}")
+        print(f"License:     {metadata.get('license_type', 'Unknown')}")
+        print(f"Description: {metadata.get('description', 'Unknown')}")
+        print(f"Created:     {metadata.get('creation_date', 'Unknown')}")
+        print(f"Resolution:  {metadata.get('resolution', 'Unknown')}")
+        categories = metadata.get("categories") or []
+        print(f"Categories:  {', '.join(categories) if categories else 'None'}")
 
 
 # =============================================================================
