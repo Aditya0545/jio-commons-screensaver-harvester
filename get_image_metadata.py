@@ -31,7 +31,7 @@ DEFAULT_IMAGE_URL = (
     "https://commons.wikimedia.org/wiki/Category:"
     "Winners_of_Wiki_Loves_Monuments_2024_by_country"
 )
-USER_AGENT = "Wiki-Jio/1.0 (contact: Jaishsingh913)"
+USER_AGENT = "Wiki-Jio/1.0 (contact: enter your mediawiki username)"
 
 # ========== CORE LOGIC ==========
 def extract_file_title(image_url: str) -> Optional[tuple[str, str]]:
