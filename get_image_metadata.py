@@ -26,12 +26,30 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
+# optional config import (create config.py in repo root if you want to override defaults)
+try:
+    import config  # type: ignore
+except Exception:
+    config = None  # fallback if no config.py present
+
 # ========== CONFIG ==========
+
 DEFAULT_IMAGE_URL = (
     "https://commons.wikimedia.org/wiki/Category:"
     "Winners_of_Wiki_Loves_Monuments_2024_by_country"
 )
-USER_AGENT = "Wiki-Jio/1.0 (contact: enter your mediawiki username)"
+
+# Build user agent: prefer MEDIAWIKI_USERNAME from config if available
+_default_user_agent = "Wiki-Jio/1.0 (contact: enter your mediawiki username)"
+try:
+    mediawiki_username = getattr(config, "MEDIAWIKI_USERNAME", "") or ""
+    mediawiki_username = mediawiki_username.strip()
+    if mediawiki_username:
+        USER_AGENT = f"Wiki-Jio/1.0 (MediaWiki user: {mediawiki_username})"
+    else:
+        USER_AGENT = _default_user_agent
+except Exception:
+    USER_AGENT = _default_user_agent
 
 # ========== CORE LOGIC ==========
 def extract_file_title(image_url: str) -> Optional[tuple[str, str]]:
@@ -409,10 +427,33 @@ def main() -> None:
 
     items: List[dict] = []
     if "Category:" in image_url:
+        # Determine effective max: CLI overrides config only if provided non-default.
+        effective_max = None
+        if args.max is not None and args.max != 15:
+            effective_max = args.max
+        else:
+            try:
+                cfg_max = getattr(config, "MAX_IMAGES", 0)
+                if isinstance(cfg_max, int) and cfg_max > 0:
+                    effective_max = cfg_max
+            except Exception:
+                effective_max = None
+
+        # Determine effective target_size: CLI (width & height) preferred; otherwise config.TARGET_RESOLUTION
         target_size = None
         if args.width and args.height:
             target_size = (args.width, args.height)
-        items = fetch_category_files_recursive(category_url=image_url, max_items=args.max, target_size=target_size)
+        else:
+            try:
+                cfg_target = getattr(config, "TARGET_RESOLUTION", None)
+                if cfg_target:
+                    # expect tuple or list with two ints
+                    if isinstance(cfg_target, (list, tuple)) and len(cfg_target) == 2:
+                        target_size = (int(cfg_target[0]), int(cfg_target[1]))
+            except Exception:
+                target_size = None
+
+        items = fetch_category_files_recursive(category_url=image_url, max_items=effective_max, target_size=target_size)
         if not items:
             print("[X] No images found in category (including subcategories).")
             sys.exit(1)
