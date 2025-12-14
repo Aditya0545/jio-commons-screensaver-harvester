@@ -11,11 +11,22 @@ MEDIAWIKI_USERNAME = ""
 # - Or set as a tuple: (width, height)
 #   Example: (1920, 1080)
 # -------------------------------------------------
-TARGET_RESOLUTION = None
+TARGET_RESOLUTION = (6000, 4000)
 
 # -------------------------------------------------
 # Number of images to fetch
 # - 0 means NO LIMIT
 # - Any positive integer limits results
 # -------------------------------------------------
-MAX_IMAGES = 100
+MAX_IMAGES = 10
+
+
+
+# Now run the script
+# Now it will traverse all sub categories of parent categories that you can see 
+
+# if it will find given resolution image in india then it will show result if not then it will search other country
+# it will search more because 10 images has not fetched yet with the given resolution so it will search all other category
+# it is still searching more, so here we have got result 
+# now check results.xlsx
+# Thank You
