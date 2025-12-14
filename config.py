@@ -3,7 +3,7 @@
 # Used ONLY to construct a compliant User-Agent.
 # Example: "SanskarDubey"
 # -------------------------------------------------
-MEDIAWIKI_USERNAME = "Sanskardubeydev"
+MEDIAWIKI_USERNAME = ""
 
 # -------------------------------------------------
 # Resolution filter
