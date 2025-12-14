@@ -1,37 +1,120 @@
-# -------------------------------------------------
-# MediaWiki account username (public, non-secret)
-# Used ONLY to construct a compliant User-Agent.
-# Example: "SanskarDubey"
-# -------------------------------------------------
-MEDIAWIKI_USERNAME = ""
+# =============================================================================
+# CONFIGURATION FOR WIKIMEDIA QUALITY IMAGE HARVESTER
+# =============================================================================
 
-# -------------------------------------------------
-# Resolution filter
-# - Leave as None to fetch ALL images
-# - Or set as a tuple: (width, height)
-#   Example: (1920, 1080)
-# -------------------------------------------------
-TARGET_RESOLUTION = (6000, 4000)
+# -----------------------------------------------------------------------------
+# MediaWiki Username (REQUIRED)
+# Used only for User-Agent - must be your Wikimedia Commons username
+# -----------------------------------------------------------------------------
+MEDIAWIKI_USERNAME = "Sanskardubedev"
 
-# -------------------------------------------------
-# Number of images to fetch
-# - 0 means NO LIMIT
-# - Any positive integer limits results
-# -------------------------------------------------
-MAX_IMAGES = 10
+# -----------------------------------------------------------------------------
+# Target Resolution(s)
+# The script will AUTO-EXPAND these to include nearby resolutions for faster results!
+# 
+# Option 1: Single resolution (most common)
+# TARGET_RESOLUTION = (2560, 1440)
+#
+# Option 2: Multiple resolutions (matches ANY of these + nearby resolutions)
+# TARGET_RESOLUTION = [(2560, 1440), (1280, 720), (1280, 853)]
+#
+# Option 3: Any resolution (fastest - no filtering)
+# TARGET_RESOLUTION = None
+# -----------------------------------------------------------------------------
 
-# Default categories to run when no URL is provided.
-# Use full category URLs. Add/remove categories here for easy updates.
-DEFAULT_CATEGORIES = [
-    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Earth",
-    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds"
+# RECOMMENDED: Include common photo resolutions for better results
+TARGET_RESOLUTION = [
+    (2560, 1440),  # QHD monitor
+    (1920, 1080),  # Full HD
+    (1280, 853),   # Common photo (3:2 ratio)
+    (1280, 720),   # HD
 ]
 
-# Now run the script
-# Now it will traverse all sub categories of parent categories that you can see 
+# If you want exact matches only (slower but more precise)
+# TARGET_RESOLUTION = (2560, 1440)
 
-# if it will find given resolution image in india then it will show result if not then it will search other country
-# it will search more because 10 images has not fetched yet with the given resolution so it will search all other category
-# it is still searching more, so here we have got result 
-# now check results.xlsx
-# Thank You
+# -----------------------------------------------------------------------------
+# Maximum Number of Images
+# -----------------------------------------------------------------------------
+MAX_IMAGES = 50
+
+# -----------------------------------------------------------------------------
+# Default Categories - FAST HIGH-QUALITY SOURCES
+# These are direct featured/quality categories that contain actual files
+# -----------------------------------------------------------------------------
+DEFAULT_CATEGORIES = [
+    # Main featured collections (most curated, highest quality)
+    "https://commons.wikimedia.org/wiki/Category:Featured_pictures_on_Wikimedia_Commons",
+    
+    # Quality images (verified good quality)
+    "https://commons.wikimedia.org/wiki/Category:Quality_images",
+    
+    # Pictures of the Day (one selected each day)
+    "https://commons.wikimedia.org/wiki/Category:Pictures_of_the_day_(Wikimedia_Commons)",
+    
+    # Valued images (most valuable in their scope)
+    "https://commons.wikimedia.org/wiki/Category:Valued_images",
+]
+
+# =============================================================================
+# ALTERNATIVE CATEGORY CONFIGURATIONS
+# =============================================================================
+
+# For nature/landscape photos:
+# DEFAULT_CATEGORIES = [
+#     "https://commons.wikimedia.org/wiki/Category:Featured_pictures_of_landscapes",
+#     "https://commons.wikimedia.org/wiki/Category:Quality_images_of_nature",
+# ]
+
+# For architecture:
+# DEFAULT_CATEGORIES = [
+#     "https://commons.wikimedia.org/wiki/Category:Featured_pictures_of_architecture",
+#     "https://commons.wikimedia.org/wiki/Category:Quality_images_of_buildings",
+# ]
+
+# For animals/wildlife:
+# DEFAULT_CATEGORIES = [
+#     "https://commons.wikimedia.org/wiki/Category:Featured_pictures_of_animals",
+#     "https://commons.wikimedia.org/wiki/Category:Quality_images_of_mammals",
+# ]
+
+# For space/astronomy:
+# DEFAULT_CATEGORIES = [
+#     "https://commons.wikimedia.org/wiki/Category:Featured_pictures_of_space",
+#     "https://commons.wikimedia.org/wiki/Category:Quality_images_of_astronomy",
+# ]
+
+# =============================================================================
+# ADVANCED SETTINGS (Optional)
+# =============================================================================
+
+# Resolution tolerance (default: 0.30 = ±30%)
+# Lower = stricter matching (slower), Higher = more flexible (faster)
+# TOLERANCE = 0.30
+
+# Minimum resolution score to accept (0-100, default: 50)
+# Higher = only better matches, Lower = accept more variety
+# MIN_RESOLUTION_SCORE = 50
+
+# =============================================================================
+# TIPS FOR FASTER RESULTS
+# =============================================================================
+# 
+# 1. Use TARGET_RESOLUTION = None for fastest harvesting (no filtering)
+# 
+# 2. Include multiple resolutions in TARGET_RESOLUTION list:
+#    TARGET_RESOLUTION = [(2560, 1440), (1920, 1080), (1280, 853)]
+#    Script will find ANY of these (+ nearby sizes)
+# 
+# 3. Use main category URLs (Featured/Quality) - these are fastest:
+#    DEFAULT_CATEGORIES = [
+#        "https://commons.wikimedia.org/wiki/Category:Featured_pictures_on_Wikimedia_Commons",
+#    ]
+# 
+# 4. Increase MAX_IMAGES if you want more variety:
+#    MAX_IMAGES = 100
+# 
+# 5. Use --tolerance flag for more flexibility:
+#    python get_image_metadata.py --tolerance 0.5
+#
+# =============================================================================
