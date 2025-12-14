@@ -6,7 +6,7 @@
 # MediaWiki Username (REQUIRED)
 # Used only for User-Agent - must be your Wikimedia Commons username
 # -----------------------------------------------------------------------------
-MEDIAWIKI_USERNAME = "Sanskardubedev"
+MEDIAWIKI_USERNAME = ""
 
 # -----------------------------------------------------------------------------
 # Target Resolution(s)
