@@ -3,7 +3,7 @@
 # Used ONLY to construct a compliant User-Agent.
 # Example: "SanskarDubey"
 # -------------------------------------------------
-MEDIAWIKI_USERNAME = ""
+MEDIAWIKI_USERNAME = "Sanskardubeydev"
 
 # -------------------------------------------------
 # Resolution filter
@@ -20,7 +20,12 @@ TARGET_RESOLUTION = (6000, 4000)
 # -------------------------------------------------
 MAX_IMAGES = 10
 
-
+# Default categories to run when no URL is provided.
+# Use full category URLs. Add/remove categories here for easy updates.
+DEFAULT_CATEGORIES = [
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Earth",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds"
+]
 
 # Now run the script
 # Now it will traverse all sub categories of parent categories that you can see 
