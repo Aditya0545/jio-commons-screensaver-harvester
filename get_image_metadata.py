@@ -26,12 +26,17 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
+import config
+
 # ========== CONFIG ==========
+
 DEFAULT_IMAGE_URL = (
     "https://commons.wikimedia.org/wiki/Category:"
     "Winners_of_Wiki_Loves_Monuments_2024_by_country"
 )
-USER_AGENT = "Wiki-Jio/1.0 (contact: enter your mediawiki username)"
+
+# Build user agent from config
+USER_AGENT = f"Wiki-Jio/1.0 (MediaWiki user: {config.MEDIAWIKI_USERNAME})"
 
 # ========== CORE LOGIC ==========
 def extract_file_title(image_url: str) -> Optional[tuple[str, str]]:
@@ -233,7 +238,6 @@ def fetch_category_files_recursive(category_url: str, max_items: int | None = No
                         mtype = "file"
                 if mtype == "subcat":
                     walk(mtitle, depth + 1)
-                    # Check limit after processing subcategory - if limit reached, stop processing
                     if max_items is not None and len(items) >= max_items:
                         return
                 elif mtype == "file":
@@ -241,7 +245,6 @@ def fetch_category_files_recursive(category_url: str, max_items: int | None = No
             cont = data.get("continue")
             if not cont:
                 break
-            # Check limit after each batch of members - if limit reached, stop processing
             if max_items is not None and len(items) >= max_items:
                 break
         if local_files:
@@ -290,20 +293,15 @@ def save_items_to_xlsx_with_hyperlinks(items: list[dict], filename: str) -> None
     ws.append(headers)
     for col_idx, _ in enumerate(headers, start=1):
         ws.cell(row=1, column=col_idx).font = header_font
-    # write rows with hyperlink: display title, hyperlink -> url
     for it in items:
         title = it.get("title") or ""
         url = it.get("url") or ""
         row_idx = ws.max_row + 1
-        # title cell (display text)
         ws.cell(row=row_idx, column=1, value=title)
-        # url cell: set hyperlink and display same text or 'Open'
         cell = ws.cell(row=row_idx, column=2, value=url if url else "")
         if url:
             cell.hyperlink = url
-            # optional: make hyperlink style (blue + underline)
             cell.font = Font(color="0000FF", underline="single")
-    # auto-fit columns (simple approach)
     for col in ws.columns:
         max_len = 0
         col_letter = get_column_letter(col[0].column)
@@ -318,18 +316,15 @@ def save_items_to_xlsx_with_hyperlinks(items: list[dict], filename: str) -> None
         ws.column_dimensions[col_letter].width = adjusted if adjusted < 100 else 100
     try:
         wb.properties.creator = USER_AGENT
-        # Use timezone-aware datetime instead of deprecated utcnow()
         wb.properties.created = datetime.now(timezone.utc)
     except Exception:
         pass
     try:
         wb.save(filename)
         print(f"[+] Saved {len(items)} rows to XLSX: {filename}")
-    except PermissionError as e:
-        # File is likely open in Excel or another program - provide helpful error message
+    except PermissionError:
         print(f"[X] Failed to write XLSX: Permission denied")
         print(f"[!] The file '{filename}' is likely open in Excel or another program.")
-        print(f"[!] Please close the file and try again.")
     except Exception as e:
         print(f"[X] Failed to write XLSX: {e}")
 
@@ -409,10 +404,27 @@ def main() -> None:
 
     items: List[dict] = []
     if "Category:" in image_url:
+        effective_max = None
+        if args.max is not None and args.max != 15:
+            effective_max = args.max
+        else:
+            cfg_max = getattr(config, "MAX_IMAGES", 0)
+            if isinstance(cfg_max, int) and cfg_max > 0:
+                effective_max = cfg_max
+
         target_size = None
         if args.width and args.height:
             target_size = (args.width, args.height)
-        items = fetch_category_files_recursive(category_url=image_url, max_items=args.max, target_size=target_size)
+        else:
+            cfg_target = getattr(config, "TARGET_RESOLUTION", None)
+            if cfg_target and isinstance(cfg_target, (list, tuple)) and len(cfg_target) == 2:
+                target_size = (int(cfg_target[0]), int(cfg_target[1]))
+
+        items = fetch_category_files_recursive(
+            category_url=image_url,
+            max_items=effective_max,
+            target_size=target_size
+        )
         if not items:
             print("[X] No images found in category (including subcategories).")
             sys.exit(1)
@@ -424,19 +436,15 @@ def main() -> None:
             print("[X] Failed to fetch image metadata.")
             sys.exit(1)
 
-    # Print minimal output
     for it in items:
         display_metadata(it)
 
-    # CSV (if requested)
     if args.csv:
         save_items_to_csv(items, args.csv)
 
-    # XLSX: use provided path or default results.xlsx in cwd
     xlsx_path = args.xlsx if args.xlsx else os.path.join(os.getcwd(), "results.xlsx")
     save_items_to_xlsx_with_hyperlinks(items, xlsx_path)
 
-    # Download images if requested
     if args.download:
         download_images(items, args.download, USER_AGENT)
 
