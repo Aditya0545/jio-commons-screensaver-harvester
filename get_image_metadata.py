@@ -1,68 +1,60 @@
 #!/usr/bin/env python3
 """
-Smart WikiMedia Commons Quality Image Harvester - OPTIMIZED FAST VERSION
-Fetches high-quality images matching your demo format.
-
-Features:
-- Targets Featured/Quality images only
-- SMART resolution matching - finds nearby resolutions too
-- FAST parallel processing - no waiting
-- Exact Excel format from demo
-- Smart thumbnail generation (<1MB)
+Wikimedia Commons Quality Image Harvester - Set-Top Box Version
+Priority-based harvesting: Winning images → Featured → Quality → General
+100% config-driven, zero redundancy
 """
 
 import sys
 import os
 import argparse
 import re
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Set
 from urllib.parse import urlparse, unquote, parse_qs
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 import config
 
-# ========== CONFIG ==========
+# ========== LOAD ALL SETTINGS FROM CONFIG ONLY ==========
 try:
     USER_AGENT = f"Wiki-Jio/1.0 (MediaWiki user: {config.MEDIAWIKI_USERNAME})"
 except Exception:
-    print("[X] config.py missing. Set MEDIAWIKI_USERNAME")
+    print("[X] config.py missing or invalid")
     sys.exit(1)
 
 if not getattr(config, "MEDIAWIKI_USERNAME", "").strip():
     print("[X] MEDIAWIKI_USERNAME is empty in config.py")
-    print("[!] Add your Wikimedia Commons username:")
-    print('    MEDIAWIKI_USERNAME = "YourUsername"')
     sys.exit(1)
 
-DEFAULT_CATEGORIES = getattr(config, "DEFAULT_CATEGORIES", [])
-TARGET_RESOLUTION = getattr(config, "TARGET_RESOLUTION", None)
-MAX_IMAGES = getattr(config, "MAX_IMAGES", 10)
-
-# Popular resolutions to target if user's exact resolution is hard to find
-COMMON_RESOLUTIONS = [
-    (3840, 2160),  # 4K (16:9)
-    (2560, 1440),  # QHD (16:9)
-    (1920, 1080),  # Full HD (16:9)
-    (1280, 720),   # HD (16:9)
-    (1280, 853),   # Common camera resolution (3:2)
-    (1920, 1280),  # Common DSLR (3:2)
-    (2048, 1365),  # Common photo resolution (3:2)
-    (3840, 2400),  # 4K widescreen (16:10)
-    (2560, 1600),  # WQXGA (16:10)
-    (1920, 1200),  # WUXGA (16:10)
-    (4000, 3000),  # 12MP photo (4:3)
-    (3000, 2000),  # 6MP photo (3:2)
-    (2400, 1600),  # Common photo (3:2)
-]
+# Everything from config - SINGLE SOURCE OF TRUTH
+CATEGORIES = getattr(config, "DEFAULT_CATEGORIES", [])
+TARGET_RESOLUTIONS = getattr(config, "TARGET_RESOLUTION", None)
+COMMON_RESOLUTIONS = getattr(config, "COMMON_RESOLUTIONS", [])
+ALLOW_COMMON = getattr(config, "ALLOW_COMMON_RESOLUTIONS", False)
+MAX_IMAGES = getattr(config, "MAX_IMAGES", 50)
+TOLERANCE = getattr(config, "TOLERANCE", 0.30)
+MIN_SCORE = getattr(config, "MIN_RESOLUTION_SCORE", 50)
+WINNING_KEYWORDS = getattr(config, "WINNING_KEYWORDS", [])
+DEFAULT_OUTPUT = getattr(config, "DEFAULT_OUTPUT_FILE", "results.xlsx")
+API_TIMEOUT = getattr(config, "API_TIMEOUT", 20)
+THUMBNAIL_WORKERS = getattr(config, "THUMBNAIL_WORKERS", 10)
+THUMBNAIL_WIDTH = getattr(config, "THUMBNAIL_WIDTH", 1920)
+MIN_WIDTH = getattr(config, "MIN_WIDTH", 800)
+MIN_HEIGHT = getattr(config, "MIN_HEIGHT", 600)
+MAX_WIDTH = getattr(config, "MAX_WIDTH", 10000)
+MAX_HEIGHT = getattr(config, "MAX_HEIGHT", 10000)
 
 
-def api_request(base_url: str, params: dict, timeout: int = 20) -> Optional[dict]:
+def api_request(base_url: str, params: dict, timeout: int = None) -> Optional[dict]:
     """Make API request with retries."""
+    if timeout is None:
+        timeout = API_TIMEOUT
+    
     api_url = f"{base_url}/w/api.php"
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     
@@ -71,7 +63,7 @@ def api_request(base_url: str, params: dict, timeout: int = 20) -> Optional[dict
             resp = requests.get(api_url, params=params, headers=headers, timeout=timeout)
             resp.raise_for_status()
             return resp.json()
-        except Exception as e:
+        except Exception:
             if attempt == 0:
                 continue
             return None
@@ -96,32 +88,34 @@ def extract_category_title(url: str) -> Optional[Tuple[str, str]]:
     return base_url, cat_title
 
 
-def resolution_score(width: int, height: int, targets: List[Tuple[int, int]], tolerance: float = 0.30) -> float:
-    """
-    Score how well an image resolution matches target resolutions.
-    Returns score 0-100. Higher is better.
-    Uses RELAXED 30% tolerance by default for faster results.
-    """
+def is_winning_category(cat_title: str) -> bool:
+    """Check if category contains winning/award images."""
+    cat_lower = cat_title.lower()
+    for keyword in WINNING_KEYWORDS:
+        if keyword.lower() in cat_lower:
+            return True
+    return False
+
+
+def resolution_score(width: int, height: int, targets: List[Tuple[int, int]], tolerance: float) -> float:
+    """Score how well image resolution matches targets. Returns 0-100."""
     best_score = 0
     
     for tw, th in targets:
-        # Calculate % difference
         w_diff = abs(width - tw) / tw
         h_diff = abs(height - th) / th
         
-        # If within tolerance, score based on how close
         if w_diff <= tolerance and h_diff <= tolerance:
             score = 100 - (w_diff + h_diff) * 50
             best_score = max(best_score, score)
         
-        # Also check if aspect ratio is similar (even if size is different)
         target_aspect = tw / th
         actual_aspect = width / height
         aspect_diff = abs(target_aspect - actual_aspect) / target_aspect
         
-        if aspect_diff < 0.1:  # Same aspect ratio
+        if aspect_diff < 0.1:
             size_diff = abs(width * height - tw * th) / (tw * th)
-            if size_diff < 0.5:  # Similar total pixels
+            if size_diff < 0.5:
                 score = 60 - size_diff * 30
                 best_score = max(best_score, score)
     
@@ -185,23 +179,15 @@ def fetch_batch_metadata(base_url: str, titles: List[str]) -> Dict[str, dict]:
         if not width or not height:
             continue
         
-        # Skip very small or very large images
-        if width < 800 or height < 600:
-            continue
-        if width > 10000 or height > 10000:
+        if width < MIN_WIDTH or height < MIN_HEIGHT or width > MAX_WIDTH or height > MAX_HEIGHT:
             continue
         
         page_url = f"{base_url}/wiki/{title}"
         file_url = info.get("url")
         
-        author = ext_value("Artist") or info.get("user") or "Unknown"
-        author = clean_html(author)
-        
-        license_type = ext_value("LicenseShortName") or ext_value("License") or "Unknown"
-        license_type = clean_html(license_type)
-        
-        description = ext_value("ImageDescription") or ext_value("ObjectName") or ""
-        description = clean_html(description)
+        author = clean_html(ext_value("Artist") or info.get("user") or "Unknown")
+        license_type = clean_html(ext_value("LicenseShortName") or ext_value("License") or "Unknown")
+        description = clean_html(ext_value("ImageDescription") or ext_value("ObjectName") or "")
         
         result[title] = {
             "page_url": page_url,
@@ -219,14 +205,14 @@ def fetch_batch_metadata(base_url: str, titles: List[str]) -> Dict[str, dict]:
     return result
 
 
-def get_thumbnail_url(base_url: str, title: str, target_width: int = 1920) -> Optional[dict]:
+def get_thumbnail_url(base_url: str, title: str) -> Optional[dict]:
     """Get thumbnail URL for a specific width."""
     params = {
         "action": "query",
         "titles": title,
         "prop": "imageinfo",
         "iiprop": "url|size",
-        "iiurlwidth": str(target_width),
+        "iiurlwidth": str(THUMBNAIL_WIDTH),
         "format": "json",
         "formatversion": "2",
     }
@@ -258,9 +244,9 @@ def process_thumbnails_batch(base_url: str, titles: List[str]) -> Dict[str, dict
     """Get thumbnails in parallel."""
     results = {}
     
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=THUMBNAIL_WORKERS) as executor:
         future_to_title = {
-            executor.submit(get_thumbnail_url, base_url, title, 1920): title
+            executor.submit(get_thumbnail_url, base_url, title): title
             for title in titles
         }
         
@@ -276,24 +262,40 @@ def process_thumbnails_batch(base_url: str, titles: List[str]) -> Dict[str, dict
     return results
 
 
-def harvest_from_category_fast(
+def load_existing_images(filename: str) -> Set[str]:
+    """Load already harvested image URLs from existing Excel file."""
+    if not os.path.exists(filename):
+        return set()
+    
+    try:
+        wb = load_workbook(filename, read_only=True)
+        ws = wb.active
+        
+        existing = set()
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row and row[1]:
+                existing.add(row[1])
+        
+        wb.close()
+        return existing
+    except Exception:
+        return set()
+
+
+def harvest_from_category(
     base_url: str,
     cat_title: str,
     max_items: int,
-    target_sizes: Optional[List[Tuple[int, int]]] = None,
-    tolerance: float = 0.30,
-    min_score: float = 50
+    target_sizes: Optional[List[Tuple[int, int]]],
+    existing_urls: Set[str],
+    is_priority: bool = False
 ) -> List[dict]:
-    """
-    Fast harvesting - only checks direct category members.
-    Uses scoring system to accept nearby resolutions.
-    """
+    """Harvest from category, skipping already collected images."""
     items = []
-    seen_files = set()
     
-    print(f"\n[*] Harvesting: {cat_title[:70]}")
+    priority_marker = "🏆 PRIORITY" if is_priority else "📁"
+    print(f"\n[*] {priority_marker} Harvesting: {cat_title[:65]}")
     
-    # Get files from this category only (fast!)
     params = {
         "action": "query",
         "list": "categorymembers",
@@ -315,122 +317,77 @@ def harvest_from_category_fast(
         print(f"    ⊘ No files in this category")
         return []
     
-    print(f"    📄 Found {len(file_titles)} files, processing...")
+    print(f"    📄 Found {len(file_titles)} files")
     
-    # Process in batches
     for i in range(0, len(file_titles), 50):
         if len(items) >= max_items:
             break
         
         batch = file_titles[i:i+50]
-        new_titles = [t for t in batch if t not in seen_files]
+        batch_meta = fetch_batch_metadata(base_url, batch)
         
-        if not new_titles:
-            continue
-        
-        for t in new_titles:
-            seen_files.add(t)
-        
-        # Fetch metadata
-        batch_meta = fetch_batch_metadata(base_url, new_titles)
-        
-        # Score and filter
         scored_items = []
         for title, meta in batch_meta.items():
             if len(items) >= max_items:
                 break
             
+            if meta["url"] in existing_urls:
+                continue
+            
             if target_sizes:
-                score = resolution_score(meta["width"], meta["height"], target_sizes, tolerance)
-                if score >= min_score:
+                score = resolution_score(meta["width"], meta["height"], target_sizes, TOLERANCE)
+                if score >= MIN_SCORE:
                     meta["resolution_score"] = score
                     scored_items.append(meta)
             else:
                 meta["resolution_score"] = 100
                 scored_items.append(meta)
         
-        # Sort by score (best matches first)
         scored_items.sort(key=lambda x: x["resolution_score"], reverse=True)
         
         for meta in scored_items:
             if len(items) >= max_items:
                 break
             items.append(meta)
-            print(f"    ✓ [{len(items)}/{max_items}] {meta['width']}×{meta['height']} (score: {meta['resolution_score']:.0f}) - {meta['title'][:35]}")
+            marker = "🏆" if is_priority else "✓"
+            print(f"    {marker} [{len(items)}/{max_items}] {meta['width']}×{meta['height']} - {meta['title'][:40]}")
     
-    print(f"    → Collected {len(items)} images")
-    return items
-
-
-def get_featured_categories_direct() -> List[str]:
-    """
-    Get direct featured/quality category URLs.
-    Much faster than scanning!
-    """
-    return [
-        # Featured Pictures - main categories
-        "https://commons.wikimedia.org/wiki/Category:Featured_pictures_on_Wikimedia_Commons",
-        
-        # Quality Images
-        "https://commons.wikimedia.org/wiki/Category:Quality_images",
-        
-        # Pictures of the Day
-        "https://commons.wikimedia.org/wiki/Category:Pictures_of_the_day_(Wikimedia_Commons)",
-        
-        # Valued Images
-        "https://commons.wikimedia.org/wiki/Category:Valued_images",
-    ]
-
-
-def harvest_from_parent_category(
-    category_url: str,
-    max_items: int,
-    target_sizes: Optional[List[Tuple[int, int]]] = None,
-    tolerance: float = 0.30
-) -> List[dict]:
-    """
-    Fast harvesting - only direct category files.
-    """
-    extracted = extract_category_title(category_url)
-    if not extracted:
-        print(f"[X] Invalid category URL: {category_url}")
-        return []
-    
-    base_url, cat_title = extracted
-    
-    items = harvest_from_category_fast(base_url, cat_title, max_items, target_sizes, tolerance)
+    if items:
+        print(f"    ✅ Collected {len(items)} new images")
     
     return items
 
 
-def save_to_xlsx(items: List[dict], filename: str) -> None:
-    """Save to Excel with hyperlinks - matching demo format exactly."""
+def append_to_xlsx(items: List[dict], filename: str) -> None:
+    """Append new images to existing Excel file or create new one."""
     if not items:
-        print("[!] No items to save")
+        print("[!] No new items to save")
         return
     
     os.makedirs(os.path.dirname(os.path.abspath(filename)) or ".", exist_ok=True)
     
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Images"
+    file_exists = os.path.exists(filename)
     
-    headers = [
-        "image_page_url",
-        "file_url", 
-        "line1",
-        "line2",
-        "best_thumb_url",
-        "best_res_under_1mb",
-        "title",
-        "description",
-        "license",
-        "author"
-    ]
-    
-    ws.append(headers)
-    for col_idx in range(1, len(headers) + 1):
-        ws.cell(1, col_idx).font = Font(bold=True)
+    if file_exists:
+        wb = load_workbook(filename)
+        ws = wb.active
+        print(f"[*] Appending to existing file: {filename}")
+    else:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Images"
+        
+        headers = [
+            "image_page_url", "file_url", "line1", "line2",
+            "best_thumb_url", "best_res_under_1mb", "title",
+            "description", "license", "author"
+        ]
+        
+        ws.append(headers)
+        for col_idx in range(1, len(headers) + 1):
+            ws.cell(1, col_idx).font = Font(bold=True)
+        
+        print(f"[*] Creating new file: {filename}")
     
     for it in items:
         author = it.get("author", "")
@@ -468,26 +425,27 @@ def save_to_xlsx(items: List[dict], filename: str) -> None:
                 cell.hyperlink = val
                 cell.font = Font(color="0000FF", underline="single")
     
-    for col in ws.columns:
-        max_len = 0
-        col_letter = get_column_letter(col[0].column)
-        for cell in col:
-            try:
-                val = str(cell.value or "")
-            except:
-                val = ""
-            max_len = max(max_len, len(val))
-        ws.column_dimensions[col_letter].width = min(max_len + 2, 100)
+    if not file_exists:
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    val = str(cell.value or "")
+                except:
+                    val = ""
+                max_len = max(max_len, len(val))
+            ws.column_dimensions[col_letter].width = min(max_len + 2, 100)
     
     try:
         wb.save(filename)
-        print(f"\n[+] Saved to: {filename}")
+        print(f"[+] Saved to: {filename}")
     except Exception as e:
         print(f"[X] Failed to save: {e}")
 
 
-def normalize_target_resolutions(config_value) -> Optional[List[Tuple[int, int]]]:
-    """Normalize TARGET_RESOLUTION from config."""
+def normalize_resolutions(config_value) -> Optional[List[Tuple[int, int]]]:
+    """Normalize resolution config to list of tuples."""
     if config_value is None:
         return None
     
@@ -504,99 +462,104 @@ def normalize_target_resolutions(config_value) -> Optional[List[Tuple[int, int]]
     return None
 
 
-def expand_target_resolutions(targets: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-    """
-    Expand target resolutions with nearby common resolutions.
-    This helps find images faster!
-    """
-    expanded = list(targets)
-    
-    # Add common resolutions that are close to targets
-    for common_res in COMMON_RESOLUTIONS:
-        if common_res not in expanded:
-            expanded.append(common_res)
-    
-    return expanded
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Fast harvest of quality images from Wikimedia Commons")
-    parser.add_argument("url", nargs="?", help="Category URL")
-    parser.add_argument("--max", "-m", type=int, help="Max images (default: from config)")
-    parser.add_argument("--xlsx", "-x", default="results.xlsx", help="Output file")
-    parser.add_argument("--width", type=int, help="Target width")
-    parser.add_argument("--height", type=int, help="Target height")
-    parser.add_argument("--tolerance", type=float, default=0.30, help="Resolution tolerance (default: 0.30 = ±30%%)")
-    parser.add_argument("--strict", action="store_true", help="Use strict resolution matching (slower)")
+    parser = argparse.ArgumentParser(description="Wikimedia Commons Image Harvester for Set-Top Box")
+    parser.add_argument("--output", "-o", default=DEFAULT_OUTPUT, help=f"Output Excel file (default: {DEFAULT_OUTPUT})")
+    parser.add_argument("--max", "-m", type=int, help="Override MAX_IMAGES from config")
     
     args = parser.parse_args()
     
-    max_items = args.max or MAX_IMAGES or 10
+    max_items = args.max if args.max else MAX_IMAGES
+    target_sizes = normalize_resolutions(TARGET_RESOLUTIONS)
     
-    # Handle target resolutions
-    target_sizes = None
-    if args.width and args.height:
-        target_sizes = [(args.width, args.height)]
-    else:
-        target_sizes = normalize_target_resolutions(TARGET_RESOLUTION)
+    # Add common resolutions if allowed
+    if target_sizes and ALLOW_COMMON and COMMON_RESOLUTIONS:
+        common = normalize_resolutions(COMMON_RESOLUTIONS)
+        if common:
+            for res in common:
+                if res not in target_sizes:
+                    target_sizes.append(res)
     
-    # Expand with common resolutions for faster results (unless strict mode)
-    if target_sizes and not args.strict:
-        target_sizes = expand_target_resolutions(target_sizes)
-        print(f"[*] Expanded to {len(target_sizes)} target resolutions for faster results")
+    if not CATEGORIES:
+        print("[X] No categories configured in config.py")
+        sys.exit(1)
     
     print("=" * 70)
-    print("🎨 WIKIMEDIA QUALITY IMAGE HARVESTER - FAST MODE")
+    print("🎨 WIKIMEDIA QUALITY IMAGE HARVESTER - SET-TOP BOX")
     print("=" * 70)
-    print(f"🎯 Max images: {max_items}")
+    print(f"🎯 Target: {max_items} images")
+    print(f"📁 Output: {args.output}")
     
     if target_sizes:
-        tolerance_pct = args.tolerance * 100
-        print(f"📐 Target resolutions (±{tolerance_pct:.0f}% tolerance, accepts nearby):")
-        for tw, th in target_sizes[:5]:
+        print(f"📐 Resolutions (±{int(TOLERANCE*100)}%):")
+        for tw, th in target_sizes[:8]:
             print(f"   • {tw}×{th}")
-        if len(target_sizes) > 5:
-            print(f"   ... and {len(target_sizes) - 5} more")
+        if len(target_sizes) > 8:
+            print(f"   ... and {len(target_sizes) - 8} more")
     else:
-        print(f"📐 Resolution: Any")
+        print(f"📐 Any resolution")
+    
+    existing_urls = load_existing_images(args.output)
+    if existing_urls:
+        print(f"📋 Found {len(existing_urls)} existing images (skipping duplicates)")
     
     print("=" * 70)
     
-    # Harvest
+    # Harvest with PRIORITY
     all_items = []
     
-    if args.url:
-        items = harvest_from_parent_category(args.url, max_items, target_sizes, args.tolerance)
-        all_items.extend(items)
-    else:
-        categories_to_use = DEFAULT_CATEGORIES if DEFAULT_CATEGORIES else None
+    # Separate categories by priority
+    priority_cats = []
+    regular_cats = []
+    
+    for cat_url in CATEGORIES:
+        extracted = extract_category_title(cat_url)
+        if not extracted:
+            continue
         
-        if not categories_to_use:
-            print("[!] No categories in config, using default featured categories...")
-            categories_to_use = get_featured_categories_direct()
+        base_url, cat_title = extracted
         
-        for cat_url in categories_to_use:
+        if is_winning_category(cat_title):
+            priority_cats.append((base_url, cat_title, cat_url))
+        else:
+            regular_cats.append((base_url, cat_title, cat_url))
+    
+    # Process priority categories FIRST
+    if priority_cats:
+        print(f"\n🏆 PRIORITY: Processing {len(priority_cats)} winning/award categories first")
+        
+        for base_url, cat_title, cat_url in priority_cats:
             if len(all_items) >= max_items:
                 break
             
-            print(f"\n{'─'*70}")
+            remaining = max_items - len(all_items)
+            items = harvest_from_category(
+                base_url, cat_title, remaining, target_sizes, existing_urls, is_priority=True
+            )
+            all_items.extend(items)
+    
+    # Process regular categories if needed
+    if len(all_items) < max_items and regular_cats:
+        print(f"\n📁 Processing {len(regular_cats)} featured/quality categories")
+        
+        for base_url, cat_title, cat_url in regular_cats:
+            if len(all_items) >= max_items:
+                break
             
             remaining = max_items - len(all_items)
-            items = harvest_from_parent_category(cat_url, remaining, target_sizes, args.tolerance)
+            items = harvest_from_category(
+                base_url, cat_title, remaining, target_sizes, existing_urls, is_priority=False
+            )
             all_items.extend(items)
     
     if not all_items:
-        print("\n[X] No images found")
-        print("\n💡 TIPS:")
-        print("   1. Remove resolution filter: TARGET_RESOLUTION = None")
-        print("   2. Use --tolerance 0.5 for more relaxed matching")
-        print("   3. Try different categories in config.py")
-        sys.exit(1)
+        print("\n[!] No new images found")
+        if existing_urls:
+            print(f"[*] Already have {len(existing_urls)} images in {args.output}")
+        sys.exit(0)
     
     # Add thumbnails
-    print(f"\n{'='*70}")
-    print(f"🖼️  Generating thumbnails for {len(all_items)} images...")
-    print("=" * 70)
+    print(f"\n🖼️  Generating thumbnails for {len(all_items)} images...")
     
     base_url = "https://commons.wikimedia.org"
     titles = [it["title"] for it in all_items]
@@ -609,35 +572,29 @@ def main():
             it["best_thumb_width"] = thumb.get("width")
             it["best_thumb_height"] = thumb.get("height")
     
-    print(f"\n{'='*70}")
-    print(f"✅ Harvested {len(all_items)} quality images")
-    print("=" * 70)
+    # Save
+    append_to_xlsx(all_items, args.output)
     
-    # Resolution breakdown
+    print(f"\n{'='*70}")
+    print(f"✅ Added {len(all_items)} new images")
+    
+    total = len(existing_urls) + len(all_items)
+    print(f"📊 Total images in file: {total}")
+    
+    # Stats
+    priority_count = sum(1 for it in all_items if it.get("resolution_score", 0) >= 80)
+    print(f"🏆 High-quality matches: {priority_count}")
+    
     res_counts = {}
     for it in all_items:
         res = f"{it['width']}×{it['height']}"
         res_counts[res] = res_counts.get(res, 0) + 1
     
-    print(f"\n📊 Resolution breakdown:")
-    for res, count in sorted(res_counts.items(), key=lambda x: -x[1])[:10]:
-        print(f"   {res}: {count} images")
+    if res_counts:
+        print(f"\n📐 New images by resolution:")
+        for res, count in sorted(res_counts.items(), key=lambda x: -x[1])[:5]:
+            print(f"   {res}: {count} images")
     
-    print(f"\n📋 Sample images:")
-    for idx, it in enumerate(all_items[:3], 1):
-        print(f"\n{idx}. {it['title'][:60]}")
-        print(f"   {it['width']:,}×{it['height']:,} pixels")
-        print(f"   {it['author'][:40]}")
-        print(f"   {it['license_type']}")
-    
-    if len(all_items) > 3:
-        print(f"\n... and {len(all_items) - 3} more")
-    
-    # Save
-    save_to_xlsx(all_items, args.xlsx)
-    
-    print(f"\n{'='*70}")
-    print(f"✅ Done! Check {args.xlsx}")
     print("=" * 70)
 
 
