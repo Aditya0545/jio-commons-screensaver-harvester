@@ -1,154 +1,127 @@
 # =============================================================================
 # WIKIMEDIA QUALITY IMAGE HARVESTER - CONFIGURATION
-# Single source of truth - all settings controlled here only
+# Focused on: Wiki Loves Monuments 2025, Wiki Loves Folklore, Wiki Loves Birds
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # MediaWiki Username (REQUIRED)
+# Used only for User-Agent compliance
 # -----------------------------------------------------------------------------
 MEDIAWIKI_USERNAME = ""
 
 # -----------------------------------------------------------------------------
-# Target Resolutions for Set-Top Box Screensaver
-# Script will ONLY use these resolutions (no auto-expansion)
-# Optimized for common TV/monitor aspect ratios
-# 
-# Format: List of (width, height) tuples
-# Keep to 6-8 resolutions for optimal performance
+# STRICT Target Resolutions (Set-Top Box)
+# Only these resolutions will be accepted (±20 pixels tolerance)
 # -----------------------------------------------------------------------------
 TARGET_RESOLUTION = [
-    (3840, 2160),  # 4K UHD (16:9) - Premium displays
-    (2560, 1440),  # QHD (16:9) - High-end monitors
-    (1920, 1080),  # Full HD (16:9) - Standard HD
-    (1280, 720),   # HD Ready (16:9) - Basic HD
-    (1920, 1280),  # DSLR format (3:2) - Photography
-    (1280, 853),   # Common photo (3:2) - Cameras
-    (2560, 1600),  # WQXGA (16:10) - Widescreen
-    (1920, 1200),  # WUXGA (16:10) - Professional
+    (1280, 720),   # HD Ready (16:9)
+    (2560, 1440),  # QHD (16:9)
 ]
 
-# Set to None to accept ANY resolution (fastest but less specific)
-# TARGET_RESOLUTION = None
+# -----------------------------------------------------------------------------
+# Resolution Matching Behavior - PIXEL TOLERANCE MODE
+# Images within ±20 pixels of target dimensions will be accepted
+# -----------------------------------------------------------------------------
+PIXEL_TOLERANCE = 20  # ±20 pixels tolerance
+EXACT_DIMENSIONS_ONLY = False  # Use pixel tolerance mode
+MIN_RESOLUTION_SCORE = 95  # Minimum score to accept image
 
-# -----------------------------------------------------------------------------
-# Common Resolutions Fallback
-# If target resolutions are too strict, script can use these as backup
-# Only used if ALLOW_COMMON_RESOLUTIONS = True
-# -----------------------------------------------------------------------------
+# Legacy percentage tolerance (not used when PIXEL_TOLERANCE > 0)
+TOLERANCE = 0.015
+ALLOW_COMMON_RESOLUTIONS = False
 COMMON_RESOLUTIONS = [
-    (3840, 2160),
-    (2560, 1440),
-    (1920, 1080),
     (1280, 720),
-    (1920, 1280),
-    (2048, 1365),
-    (1280, 853),
+    (2560, 1440),
 ]
 
-# Enable fallback to common resolutions if target not found
-ALLOW_COMMON_RESOLUTIONS = True
+# -----------------------------------------------------------------------------
+# Image Limits
+# -----------------------------------------------------------------------------
+MAX_IMAGES = 1000
 
 # -----------------------------------------------------------------------------
-# Maximum Images Per Run
+# Image Dimension Safety Limits
 # -----------------------------------------------------------------------------
-MAX_IMAGES = 50
-
-# -----------------------------------------------------------------------------
-# Resolution Matching Settings
-# -----------------------------------------------------------------------------
-TOLERANCE = 0.30  # ±30% tolerance (0.30 = 30%, 0.50 = 50%)
-MIN_RESOLUTION_SCORE = 50  # Minimum score 0-100 (lower = more flexible)
-
-# -----------------------------------------------------------------------------
-# Categories to Harvest From - PRIORITY ORDER
-# 
-# Categories are processed in order listed below
-# PRIORITY 1: Winning/Award categories (processed FIRST)
-# PRIORITY 2: Featured/Quality categories (processed if needed)
-# PRIORITY 3: General quality categories (backup)
-#
-# Keywords for PRIORITY categories: "winning", "winner", "award", 
-# "picture of the year", "photo of the year"
-# -----------------------------------------------------------------------------
-
-# PRIORITY 1: Award-winning and competition winners (HIGHEST PRIORITY)
-PRIORITY_CATEGORIES = [
-    "https://commons.wikimedia.org/wiki/Category:Pictures_of_the_Year",
-    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Earth_winning_images",
-    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Monuments_winning_images",
-    "https://commons.wikimedia.org/wiki/Category:Picture_of_the_Day_winners",
-]
-
-# PRIORITY 2: Featured and quality images (HIGH PRIORITY)
-FEATURED_CATEGORIES = [
-    "https://commons.wikimedia.org/wiki/Category:Featured_pictures_on_Wikimedia_Commons",
-    "https://commons.wikimedia.org/wiki/Category:Quality_images",
-    "https://commons.wikimedia.org/wiki/Category:Valued_images",
-]
-
-# PRIORITY 3: General quality categories (BACKUP)
-GENERAL_CATEGORIES = [
-    "https://commons.wikimedia.org/wiki/Category:Pictures_of_the_day_(Wikimedia_Commons)",
-]
-
-# Combine all categories in priority order
-DEFAULT_CATEGORIES = PRIORITY_CATEGORIES + FEATURED_CATEGORIES + GENERAL_CATEGORIES
-
-# -----------------------------------------------------------------------------
-# Priority Keywords for Automatic Category Detection
-# If script finds subcategories with these keywords, it prioritizes them
-# -----------------------------------------------------------------------------
-WINNING_KEYWORDS = [
-    "winning", "winner", "winners", "award", "awards",
-    "picture of the year", "photo of the year",
-    "pictures of the year", "competition",
-    "prize", "best of"
-]
-
-# =============================================================================
-# ALTERNATIVE CONFIGURATIONS FOR SPECIFIC THEMES
-# =============================================================================
-
-# For Nature/Landscape Screensavers:
-# TARGET_RESOLUTION = [(3840, 2160), (2560, 1440), (1920, 1080)]
-# DEFAULT_CATEGORIES = [
-#     "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Earth_winning_images",
-#     "https://commons.wikimedia.org/wiki/Category:Featured_pictures_of_landscapes",
-#     "https://commons.wikimedia.org/wiki/Category:Quality_images_of_nature",
-# ]
-
-# For Architecture/Monuments:
-# DEFAULT_CATEGORIES = [
-#     "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Monuments_winning_images",
-#     "https://commons.wikimedia.org/wiki/Category:Featured_pictures_of_architecture",
-# ]
-
-# For Wildlife/Animals:
-# DEFAULT_CATEGORIES = [
-#     "https://commons.wikimedia.org/wiki/Category:Featured_pictures_of_animals",
-#     "https://commons.wikimedia.org/wiki/Category:Quality_images_of_mammals",
-# ]
-
-# =============================================================================
-# ADVANCED SETTINGS (Optional)
-# =============================================================================
-
-# Output file name (can be overridden via command line)
-DEFAULT_OUTPUT_FILE = "results.xlsx"
-
-# API request timeout in seconds
-API_TIMEOUT = 20
-
-# Number of parallel thumbnail downloads
-THUMBNAIL_WORKERS = 10
-
-# Thumbnail target width (pixels)
-THUMBNAIL_WIDTH = 1920
-
-# Minimum image dimensions to consider
-MIN_WIDTH = 800
-MIN_HEIGHT = 600
-
-# Maximum image dimensions to consider
+MIN_WIDTH = 600
+MIN_HEIGHT = 500
 MAX_WIDTH = 10000
 MAX_HEIGHT = 10000
+
+# -----------------------------------------------------------------------------
+# Output & Performance
+# -----------------------------------------------------------------------------
+DEFAULT_OUTPUT_FILE = "results.xlsx"
+VIEWING_OUTPUT_FILE = "result_viewing.xlsx"  # Safe copy for viewing
+API_TIMEOUT = 30
+THUMBNAIL_WORKERS = 10
+THUMBNAIL_WIDTH = 1920
+BATCH_SIZE = 10  # Save every 10 images
+
+# =============================================================================
+# CATEGORY STRATEGY - FOCUSED ON 3 CAMPAIGNS ONLY
+# -----------------------------------------------------------------------------
+# 1️⃣ Wiki Loves Monuments 2025
+# 2️⃣ Wiki Loves Folklore (all years - old ongoing event)
+# 3️⃣ Wiki Loves Birds (all editions)
+# =============================================================================
+
+DEFAULT_CATEGORIES = [
+    # =========================================================================
+    # WIKI LOVES MONUMENTS 2025
+    # =========================================================================
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Monuments_2025",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Monuments_2025",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Monuments_2025_in_India",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Monuments_2025_in_Germany",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Monuments_2025_in_France",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Monuments_2025_in_Italy",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Monuments_2025_in_Spain",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Monuments_2025_in_Poland",
+    
+    # =========================================================================
+    # WIKI LOVES FOLKLORE (ALL YEARS - Ongoing event since many years)
+    # =========================================================================
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Folklore",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Folklore",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Folklore_2025",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Folklore_2024",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Folklore_2023",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Folklore_2022",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Folklore_2021",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Folklore_2020",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Folklore_2019",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Folklore_winning_images",
+    
+    # =========================================================================
+    # WIKI LOVES BIRDS (ALL EDITIONS)
+    # =========================================================================
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds_winning_images",
+    "https://commons.wikimedia.org/wiki/Category:Images_from_Wiki_Loves_Birds",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds_2025",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds_2024",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds_2023",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds_2022",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds_2021",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds_India",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds_India_2024",
+    "https://commons.wikimedia.org/wiki/Category:Wiki_Loves_Birds_India_2023",
+]
+
+# -----------------------------------------------------------------------------
+# Keywords to auto-detect priority subcategories during traversal
+# -----------------------------------------------------------------------------
+WINNING_KEYWORDS = [
+    "winning", "winner", "award", "awarded",
+    "best", "picture of the year",
+    "competition", "prize", "featured"
+]
+
+# =============================================================================
+# NOTES
+# -----------------------------------------------------------------------------
+# • ONLY 3 campaigns: Wiki Loves Monuments 2025, Wiki Loves Folklore, Wiki Loves Birds
+# • ±20 pixel tolerance for resolution matching
+# • Dual output: results.xlsx (main) + result_viewing.xlsx (safe to open)
+# • Batch save every 10 images
+# =============================================================================
