@@ -32,22 +32,24 @@ if not getattr(config, "MEDIAWIKI_USERNAME", "").strip():
     sys.exit(1)
 
 # Everything from config - SINGLE SOURCE OF TRUTH
-CATEGORIES = getattr(config, "DEFAULT_CATEGORIES", [])
+CATEGORIES = config.DEFAULT_CATEGORIES
 TARGET_RESOLUTIONS = getattr(config, "TARGET_RESOLUTION", None)
 COMMON_RESOLUTIONS = getattr(config, "COMMON_RESOLUTIONS", [])
 ALLOW_COMMON = getattr(config, "ALLOW_COMMON_RESOLUTIONS", False)
-MAX_IMAGES = getattr(config, "MAX_IMAGES", 50)
-TOLERANCE = getattr(config, "TOLERANCE", 0.30)
-MIN_SCORE = getattr(config, "MIN_RESOLUTION_SCORE", 50)
-WINNING_KEYWORDS = getattr(config, "WINNING_KEYWORDS", [])
-DEFAULT_OUTPUT = getattr(config, "DEFAULT_OUTPUT_FILE", "results.xlsx")
-API_TIMEOUT = getattr(config, "API_TIMEOUT", 20)
-THUMBNAIL_WORKERS = getattr(config, "THUMBNAIL_WORKERS", 10)
-THUMBNAIL_WIDTH = getattr(config, "THUMBNAIL_WIDTH", 1920)
-MIN_WIDTH = getattr(config, "MIN_WIDTH", 800)
-MIN_HEIGHT = getattr(config, "MIN_HEIGHT", 600)
-MAX_WIDTH = getattr(config, "MAX_WIDTH", 10000)
-MAX_HEIGHT = getattr(config, "MAX_HEIGHT", 10000)
+MAX_IMAGES = config.MAX_IMAGES
+WINNING_KEYWORDS = config.WINNING_KEYWORDS
+DEFAULT_OUTPUT = config.DEFAULT_OUTPUT_FILE
+
+# Internal defaults (not in config - kept simple)
+TOLERANCE = 0.0  # Exact match only - no tolerance for resolution matching
+MIN_SCORE = 50  # Minimum resolution score to accept
+MIN_WIDTH = 800
+MIN_HEIGHT = 600
+MAX_WIDTH = 10000
+MAX_HEIGHT = 10000
+THUMBNAIL_WIDTH = 1920
+THUMBNAIL_WORKERS = 10
+API_TIMEOUT = 20
 
 
 def api_request(base_url: str, params: dict, timeout: int = None) -> Optional[dict]:
@@ -70,22 +72,27 @@ def api_request(base_url: str, params: dict, timeout: int = None) -> Optional[di
 
 
 def extract_category_title(url: str) -> Optional[Tuple[str, str]]:
-    """Extract base_url and category title from URL."""
+    """Extract base_url and page title from URL.
+    Supports both Category: and Commons: namespace pages.
+    """
     parsed = urlparse(url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
     
     if "/wiki/" in parsed.path:
-        cat_title = unquote(parsed.path.split("/wiki/", 1)[1])
+        page_title = unquote(parsed.path.split("/wiki/", 1)[1])
     elif "title=" in parsed.query:
         query_params = parse_qs(parsed.query)
-        cat_title = unquote(query_params.get("title", [""])[0])
+        page_title = unquote(query_params.get("title", [""])[0])
     else:
         return None
     
-    if not cat_title.startswith("Category:"):
+    # Accept both Category: and Commons: namespace pages
+    # Category: pages use categorymembers API
+    # Commons: pages use images API to get linked images
+    if not (page_title.startswith("Category:") or page_title.startswith("Commons:")):
         return None
     
-    return base_url, cat_title
+    return base_url, page_title
 
 
 def is_winning_category(cat_title: str) -> bool:
@@ -98,28 +105,17 @@ def is_winning_category(cat_title: str) -> bool:
 
 
 def resolution_score(width: int, height: int, targets: List[Tuple[int, int]], tolerance: float) -> float:
-    """Score how well image resolution matches targets. Returns 0-100."""
-    best_score = 0
-    
+    """Score how well image resolution matches targets. Returns 0-100.
+    Only accepts EXACT matches - width and height must match exactly.
+    """
+    # Check for exact matches only
     for tw, th in targets:
-        w_diff = abs(width - tw) / tw
-        h_diff = abs(height - th) / th
-        
-        if w_diff <= tolerance and h_diff <= tolerance:
-            score = 100 - (w_diff + h_diff) * 50
-            best_score = max(best_score, score)
-        
-        target_aspect = tw / th
-        actual_aspect = width / height
-        aspect_diff = abs(target_aspect - actual_aspect) / target_aspect
-        
-        if aspect_diff < 0.1:
-            size_diff = abs(width * height - tw * th) / (tw * th)
-            if size_diff < 0.5:
-                score = 60 - size_diff * 30
-                best_score = max(best_score, score)
+        # Exact match required - width and height must be identical
+        if width == tw and height == th:
+            return 100
     
-    return best_score
+    # No match found - return 0
+    return 0
 
 
 def clean_html(text: str) -> str:
@@ -129,6 +125,23 @@ def clean_html(text: str) -> str:
     text = re.sub(r'<[^>]+>', '', text)
     text = ' '.join(text.split())
     return text.strip()
+
+
+def is_allowed_format(title: str) -> bool:
+    """Check if file format is allowed (jpg, jpeg, png only)."""
+    # MediaWiki titles are like "File:example.jpg"
+    # Extract extension from title
+    title_lower = title.lower()
+    
+    # Allowed formats
+    allowed_extensions = ['.jpg', '.jpeg', '.png']
+    
+    # Check if title ends with any allowed extension
+    for ext in allowed_extensions:
+        if title_lower.endswith(ext):
+            return True
+    
+    return False
 
 
 def fetch_batch_metadata(base_url: str, titles: List[str]) -> Dict[str, dict]:
@@ -164,6 +177,10 @@ def fetch_batch_metadata(base_url: str, titles: List[str]) -> Dict[str, dict]:
         
         info = imageinfo[0]
         title = page.get("title", "")
+        
+        # Filter by file format - only allow jpg, jpeg, png
+        if not is_allowed_format(title):
+            continue
         
         ext = info.get("extmetadata", {}) or {}
         
@@ -217,7 +234,7 @@ def get_thumbnail_url(base_url: str, title: str) -> Optional[dict]:
         "formatversion": "2",
     }
     
-    data = api_request(base_url, params, timeout=10)
+    data = api_request(base_url, params, timeout=API_TIMEOUT)
     if not data:
         return None
     
@@ -262,45 +279,72 @@ def process_thumbnails_batch(base_url: str, titles: List[str]) -> Dict[str, dict
     return results
 
 
-def load_existing_images(filename: str) -> Set[str]:
-    """Load already harvested image URLs from existing Excel file."""
+def load_existing_images(filename: str) -> Tuple[Set[str], int]:
+    """Load already harvested image URLs from existing Excel file.
+    Returns: (set of existing URLs, highest batch number found)
+    """
     if not os.path.exists(filename):
-        return set()
+        return set(), 0
     
     try:
         wb = load_workbook(filename, read_only=True)
         ws = wb.active
         
         existing = set()
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if row and row[1]:
-                existing.add(row[1])
+        max_batch = 0
+        
+        # Check if batch_number column exists (first column)
+        # If file has headers, check row 1 to see column structure
+        headers = []
+        if ws.max_row >= 1:
+            for cell in ws[1]:
+                headers.append(cell.value)
+        
+        # Determine column indices
+        # New format: batch_number (col 0), image_page_url (col 1), file_url (col 2)
+        # Old format: image_page_url (col 0), file_url (col 1), no batch_number
+        has_batch_column = headers and headers[0] == "batch_number"
+        
+        if has_batch_column:
+            # New format: batch_number in col 0, image_page_url in col 1, file_url in col 2
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if row and len(row) > 2:
+                    batch_val = row[0]
+                    file_url = row[2]  # file_url is in column 2 in new format
+                    
+                    # Track max batch number
+                    if batch_val and isinstance(batch_val, (int, float)):
+                        max_batch = max(max_batch, int(batch_val))
+                    
+                    # Track existing URLs
+                    if file_url:
+                        existing.add(file_url)
+        else:
+            # Old format: image_page_url in col 0, file_url in col 1
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if row and len(row) > 1 and row[1]:
+                    existing.add(row[1])  # file_url is in column 1 in old format
+            # For old files, start batch from 1
+            max_batch = 1 if existing else 0
         
         wb.close()
-        return existing
+        return existing, max_batch
     except Exception:
-        return set()
+        return set(), 0
 
 
-def harvest_from_category(
-    base_url: str,
-    cat_title: str,
-    max_items: int,
-    target_sizes: Optional[List[Tuple[int, int]]],
-    existing_urls: Set[str],
-    is_priority: bool = False
-) -> List[dict]:
-    """Harvest from category, skipping already collected images."""
-    items = []
-    
-    priority_marker = "🏆 PRIORITY" if is_priority else "📁"
-    print(f"\n[*] {priority_marker} Harvesting: {cat_title[:65]}")
+def get_subcategories(base_url: str, cat_title: str) -> List[str]:
+    """Get all subcategories from a category.
+    Returns list of subcategory titles (Category:...).
+    """
+    if not cat_title.startswith("Category:"):
+        return []
     
     params = {
         "action": "query",
         "list": "categorymembers",
         "cmtitle": cat_title,
-        "cmtype": "file",
+        "cmtype": "subcat",  # Only get subcategories
         "cmlimit": "500",
         "format": "json",
         "formatversion": "2",
@@ -311,55 +355,162 @@ def harvest_from_category(
         return []
     
     members = data.get("query", {}).get("categorymembers", [])
-    file_titles = [m.get("title") for m in members if isinstance(m, dict) and m.get("title")]
+    subcategories = [
+        m.get("title") for m in members 
+        if isinstance(m, dict) and m.get("title") and m.get("title").startswith("Category:")
+    ]
     
-    if not file_titles:
-        print(f"    ⊘ No files in this category")
+    return subcategories
+
+
+def harvest_from_category(
+    base_url: str,
+    cat_title: str,
+    max_items: int,
+    target_sizes: Optional[List[Tuple[int, int]]],
+    existing_urls: Set[str],
+    is_priority: bool = False,
+    processed_cats: Optional[Set[str]] = None,
+    depth: int = 0,
+    max_depth: int = 2
+) -> List[dict]:
+    """Harvest from category or Commons page, skipping already collected images.
+    Recursively processes subcategories up to max_depth levels.
+    Uses categorymembers API for Category: pages, images API for Commons: pages.
+    """
+    # Track processed categories to avoid infinite loops
+    if processed_cats is None:
+        processed_cats = set()
+    
+    # Avoid processing same category twice
+    if cat_title in processed_cats:
         return []
     
-    print(f"    📄 Found {len(file_titles)} files")
+    processed_cats.add(cat_title)
     
-    for i in range(0, len(file_titles), 50):
-        if len(items) >= max_items:
-            break
+    items = []
+    
+    # Indent output based on depth for better readability
+    indent = "  " * depth
+    priority_marker = "🏆 PRIORITY" if is_priority else "📁"
+    print(f"\n[*] {priority_marker} {indent}Harvesting: {cat_title[:65]}")
+    
+    file_titles = []
+    
+    # Use different API methods based on page type
+    if cat_title.startswith("Category:"):
+        # Standard category - use categorymembers API
+        params = {
+            "action": "query",
+            "list": "categorymembers",
+            "cmtitle": cat_title,
+            "cmtype": "file",
+            "cmlimit": "500",
+            "format": "json",
+            "formatversion": "2",
+        }
         
-        batch = file_titles[i:i+50]
-        batch_meta = fetch_batch_metadata(base_url, batch)
+        data = api_request(base_url, params)
+        if data:
+            members = data.get("query", {}).get("categorymembers", [])
+            file_titles = [m.get("title") for m in members if isinstance(m, dict) and m.get("title")]
+    elif cat_title.startswith("Commons:"):
+        # Commons namespace page - use images API to get linked images
+        params = {
+            "action": "query",
+            "titles": cat_title,
+            "prop": "images",
+            "imlimit": "500",
+            "format": "json",
+            "formatversion": "2",
+        }
         
-        scored_items = []
-        for title, meta in batch_meta.items():
+        data = api_request(base_url, params)
+        if data:
+            pages = data.get("query", {}).get("pages", [])
+            for page in pages:
+                images = page.get("images", [])
+                # Filter to only include File: namespace pages (actual image files)
+                file_titles = [
+                    img.get("title") for img in images 
+                    if isinstance(img, dict) and img.get("title") and img.get("title").startswith("File:")
+                ]
+                break  # Only process first page
+    
+    # Process files in this category
+    if file_titles:
+        print(f"    {indent}📄 Found {len(file_titles)} files")
+        
+        for i in range(0, len(file_titles), 50):
             if len(items) >= max_items:
                 break
             
-            if meta["url"] in existing_urls:
-                continue
+            batch = file_titles[i:i+50]
+            batch_meta = fetch_batch_metadata(base_url, batch)
             
-            if target_sizes:
-                score = resolution_score(meta["width"], meta["height"], target_sizes, TOLERANCE)
-                if score >= MIN_SCORE:
-                    meta["resolution_score"] = score
+            scored_items = []
+            for title, meta in batch_meta.items():
+                if len(items) >= max_items:
+                    break
+                
+                if meta["url"] in existing_urls:
+                    continue
+                
+                if target_sizes:
+                    score = resolution_score(meta["width"], meta["height"], target_sizes, TOLERANCE)
+                    if score >= MIN_SCORE:
+                        meta["resolution_score"] = score
+                        scored_items.append(meta)
+                else:
+                    meta["resolution_score"] = 100
                     scored_items.append(meta)
-            else:
-                meta["resolution_score"] = 100
-                scored_items.append(meta)
+            
+            scored_items.sort(key=lambda x: x["resolution_score"], reverse=True)
+            
+            for meta in scored_items:
+                if len(items) >= max_items:
+                    break
+                items.append(meta)
+                marker = "🏆" if is_priority else "✓"
+                print(f"    {indent}{marker} [{len(items)}/{max_items}] {meta['width']}×{meta['height']} - {meta['title'][:40]}")
+    
+    # Recursively process subcategories if depth limit not reached
+    if len(items) < max_items and depth < max_depth and cat_title.startswith("Category:"):
+        subcategories = get_subcategories(base_url, cat_title)
         
-        scored_items.sort(key=lambda x: x["resolution_score"], reverse=True)
-        
-        for meta in scored_items:
-            if len(items) >= max_items:
-                break
-            items.append(meta)
-            marker = "🏆" if is_priority else "✓"
-            print(f"    {marker} [{len(items)}/{max_items}] {meta['width']}×{meta['height']} - {meta['title'][:40]}")
+        if subcategories:
+            print(f"    {indent}📂 Found {len(subcategories)} subcategories")
+            
+            for subcat in subcategories:
+                if len(items) >= max_items:
+                    break
+                
+                # Recursively harvest from subcategory
+                sub_items = harvest_from_category(
+                    base_url,
+                    subcat,
+                    max_items - len(items),
+                    target_sizes,
+                    existing_urls,
+                    is_priority,
+                    processed_cats,
+                    depth + 1,
+                    max_depth
+                )
+                items.extend(sub_items)
     
     if items:
-        print(f"    ✅ Collected {len(items)} new images")
+        print(f"    {indent}✅ Collected {len(items)} new images from {cat_title[:50]}")
+    elif not file_titles and depth == 0:
+        print(f"    {indent}⊘ No files found")
     
     return items
 
 
-def append_to_xlsx(items: List[dict], filename: str) -> None:
-    """Append new images to existing Excel file or create new one."""
+def append_to_xlsx(items: List[dict], filename: str, batch_number: int) -> None:
+    """Append new images to existing Excel file or create new one.
+    Adds batch_number as first column to track which run added each image.
+    """
     if not items:
         print("[!] No new items to save")
         return
@@ -371,14 +522,36 @@ def append_to_xlsx(items: List[dict], filename: str) -> None:
     if file_exists:
         wb = load_workbook(filename)
         ws = wb.active
-        print(f"[*] Appending to existing file: {filename}")
+        
+        # Check if batch_number column exists
+        headers = []
+        if ws.max_row >= 1:
+            for cell in ws[1]:
+                headers.append(cell.value)
+        
+        has_batch_column = headers and headers[0] == "batch_number"
+        
+        if not has_batch_column:
+            # Old format file - need to add batch_number column
+            # Insert new first column for batch_number
+            ws.insert_cols(1)
+            ws.cell(1, 1, "batch_number").font = Font(bold=True)
+            
+            # Add batch number 1 to all existing rows
+            for row_idx in range(2, ws.max_row + 1):
+                ws.cell(row_idx, 1, 1)
+            
+            print(f"[*] Updated existing file format: added batch_number column")
+        
+        print(f"[*] Appending batch #{batch_number} to existing file: {filename}")
     else:
         wb = Workbook()
         ws = wb.active
         ws.title = "Images"
         
+        # New format: batch_number is first column
         headers = [
-            "image_page_url", "file_url", "line1", "line2",
+            "batch_number", "image_page_url", "file_url", "line1", "line2",
             "best_thumb_url", "best_res_under_1mb", "title",
             "description", "license", "author"
         ]
@@ -389,6 +562,7 @@ def append_to_xlsx(items: List[dict], filename: str) -> None:
         
         print(f"[*] Creating new file: {filename}")
     
+    # Add new items with batch number
     for it in items:
         author = it.get("author", "")
         license_type = it.get("license_type", "")
@@ -403,7 +577,9 @@ def append_to_xlsx(items: List[dict], filename: str) -> None:
             h = it['best_thumb_height']
             thumb_res = f"{w:,} × {h:,} pixels"
         
+        # Row with batch_number as first column
         row = [
+            batch_number,  # Batch number in first column
             it.get("page_url", ""),
             it.get("url", ""),
             line1,
@@ -421,10 +597,12 @@ def append_to_xlsx(items: List[dict], filename: str) -> None:
         for col_idx, val in enumerate(row, 1):
             cell = ws.cell(row_idx, col_idx, val)
             
-            if col_idx in [1, 2, 5] and val:
+            # Hyperlink columns shifted by 1 (was 1,2,5, now 2,3,6)
+            if col_idx in [2, 3, 6] and val:
                 cell.hyperlink = val
                 cell.font = Font(color="0000FF", underline="single")
     
+    # Auto-size columns for new files only
     if not file_exists:
         for col in ws.columns:
             max_len = 0
@@ -439,7 +617,7 @@ def append_to_xlsx(items: List[dict], filename: str) -> None:
     
     try:
         wb.save(filename)
-        print(f"[+] Saved to: {filename}")
+        print(f"[+] Saved batch #{batch_number} to: {filename}")
     except Exception as e:
         print(f"[X] Failed to save: {e}")
 
@@ -491,7 +669,10 @@ def main():
     print(f"📁 Output: {args.output}")
     
     if target_sizes:
-        print(f"📐 Resolutions (±{int(TOLERANCE*100)}%):")
+        if TOLERANCE == 0.0:
+            print(f"📐 Resolutions (EXACT MATCH ONLY):")
+        else:
+            print(f"📐 Resolutions (±{int(TOLERANCE*100)}%):")
         for tw, th in target_sizes[:8]:
             print(f"   • {tw}×{th}")
         if len(target_sizes) > 8:
@@ -499,9 +680,14 @@ def main():
     else:
         print(f"📐 Any resolution")
     
-    existing_urls = load_existing_images(args.output)
+    existing_urls, max_batch = load_existing_images(args.output)
+    next_batch = max_batch + 1
+    
     if existing_urls:
         print(f"📋 Found {len(existing_urls)} existing images (skipping duplicates)")
+        print(f"📦 Last batch: #{max_batch}, Starting new batch: #{next_batch}")
+    else:
+        print(f"📦 Starting batch: #{next_batch}")
     
     print("=" * 70)
     
@@ -524,6 +710,9 @@ def main():
         else:
             regular_cats.append((base_url, cat_title, cat_url))
     
+    # Track processed categories across all runs to avoid duplicates
+    processed_categories = set()
+    
     # Process priority categories FIRST
     if priority_cats:
         print(f"\n🏆 PRIORITY: Processing {len(priority_cats)} winning/award categories first")
@@ -534,7 +723,8 @@ def main():
             
             remaining = max_items - len(all_items)
             items = harvest_from_category(
-                base_url, cat_title, remaining, target_sizes, existing_urls, is_priority=True
+                base_url, cat_title, remaining, target_sizes, existing_urls, 
+                is_priority=True, processed_cats=processed_categories
             )
             all_items.extend(items)
     
@@ -548,7 +738,8 @@ def main():
             
             remaining = max_items - len(all_items)
             items = harvest_from_category(
-                base_url, cat_title, remaining, target_sizes, existing_urls, is_priority=False
+                base_url, cat_title, remaining, target_sizes, existing_urls, 
+                is_priority=False, processed_cats=processed_categories
             )
             all_items.extend(items)
     
@@ -572,14 +763,15 @@ def main():
             it["best_thumb_width"] = thumb.get("width")
             it["best_thumb_height"] = thumb.get("height")
     
-    # Save
-    append_to_xlsx(all_items, args.output)
+    # Save with batch number
+    append_to_xlsx(all_items, args.output, next_batch)
     
     print(f"\n{'='*70}")
-    print(f"✅ Added {len(all_items)} new images")
+    print(f"✅ Added {len(all_items)} new images in batch #{next_batch}")
     
     total = len(existing_urls) + len(all_items)
     print(f"📊 Total images in file: {total}")
+    print(f"📦 Batch #{next_batch} complete")
     
     # Stats
     priority_count = sum(1 for it in all_items if it.get("resolution_score", 0) >= 80)
